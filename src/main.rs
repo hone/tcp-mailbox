@@ -1,8 +1,10 @@
 use std::{
     collections::VecDeque,
-    io::{BufRead, BufReader, Write},
-    net::{TcpListener, TcpStream},
     sync::{Arc, Mutex},
+};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::{TcpListener, TcpStream},
 };
 
 #[derive(Debug, Eq, PartialEq)]
@@ -11,26 +13,28 @@ enum Request {
     Retrieve,
 }
 
-fn main() {
-    let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:7878").await?;
     let storage = Arc::new(Mutex::new(VecDeque::new()));
 
-    for connection_attempt in listener.incoming() {
-        match connection_attempt {
-            Ok(stream) => {
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
                 let mut thread_handle = Arc::clone(&storage);
-                std::thread::spawn(move || handle_client(stream, &mut thread_handle));
+                tokio::spawn(async move { handle_client(stream, &mut thread_handle).await });
             }
-            Err(e) => {
-                eprintln!("Error connecting: {}", e)
-            }
+            Err(e) => eprintln!("Error connecting: {}", e),
         }
     }
 }
 
-fn handle_client(mut stream: TcpStream, storage: &Mutex<VecDeque<String>>) -> () {
+async fn handle_client(
+    mut stream: TcpStream,
+    storage: &Mutex<VecDeque<String>>,
+) -> anyhow::Result<()> {
     println!("Client connected!");
-    let line = read_line(&stream);
+    let line = read_line(&mut stream).await?;
     let request = parse_request(line);
 
     match request {
@@ -41,11 +45,13 @@ fn handle_client(mut stream: TcpStream, storage: &Mutex<VecDeque<String>>) -> ()
         Request::Retrieve => {
             let maybe_msg = storage.lock().unwrap().pop_front();
             match maybe_msg {
-                Some(msg) => stream.write_all(msg.as_bytes()).unwrap(),
-                None => stream.write_all(b"no message available").unwrap(),
+                Some(msg) => stream.write_all(msg.as_bytes()).await?,
+                None => stream.write_all(b"no message available").await?,
             }
         }
     }
+
+    Ok(())
 }
 
 fn parse_request(line: String) -> Request {
@@ -58,11 +64,11 @@ fn parse_request(line: String) -> Request {
     }
 }
 
-fn read_line(stream: &TcpStream) -> String {
+async fn read_line(stream: &mut TcpStream) -> anyhow::Result<String> {
     let mut buffered_reader = BufReader::new(stream);
 
     let mut buf = String::new();
-    buffered_reader.read_line(&mut buf).unwrap();
+    buffered_reader.read_line(&mut buf).await?;
 
-    buf
+    Ok(buf)
 }
